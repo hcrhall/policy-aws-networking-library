@@ -1,0 +1,88 @@
+#  Ensure no security groups allow ingress from 0.0.0.0/0 to port 22
+This policy enforces recommendations for configuring security-related aspects of the default Virtual Private Cloud (VPC) in AWS and blocks any `aws_security_group` or `aws_security_group_rule` resource configuration that will provide unfettered connectivity to remote console services on TCP port 22.
+
+## Parameters
+This policy does not contain parameter declarations.
+
+## Policy
+```sentinel
+import "tfplan/v2" as tfplan
+
+aws_security_groups = filter tfplan.resource_changes as _, resource_changes {
+	length(resource_changes.change.after.ingress else []) != 0 and
+		resource_changes.mode is "managed" and
+		resource_changes.type is "aws_security_group" and
+		(resource_changes.change.actions contains "create" or
+			resource_changes.change.actions is ["update"])
+}
+
+aws_security_group_rules = filter tfplan.resource_changes as _, resource_changes {
+	resource_changes.mode is "managed" and
+		resource_changes.type is "aws_security_group_rule" and
+		resource_changes.change.after.type is "ingress" and
+		(resource_changes.change.actions contains "create" or
+			resource_changes.change.actions is ["update"])
+}
+
+ssh_security_groups = filter aws_security_groups as _, asg {
+	any asg.change.after.ingress as _, ingress {
+		ingress.to_port is 22 or
+			(ingress.from_port <= 22 and
+				ingress.to_port >= 22)
+	}
+}
+
+ssh_security_group_rules = filter aws_security_group_rules as _, asgr {
+	asgr.change.after.to_port is 22 or
+		(asgr.change.after.from_port <= 22 and
+			asgr.change.after.to_port >= 22)
+}
+
+protocol_security_groups = filter aws_security_groups as _, asg {
+	all asg.change.after.ingress as _, ingress {
+		ingress.protocol is "-1"
+	}
+}
+
+protocol_security_group_rules = filter aws_security_group_rules as _, asgr {
+	asgr.change.after.protocol is "-1"
+}
+
+print("CIS 4.1: Ensure no AWS security groups allow ingress from 0.0.0.0/0 to port 22")
+
+deny_public_ssh_security_groups = rule {
+	all ssh_security_groups as _, ssg {
+		all ssg.change.after.ingress as _, ingress {
+			ingress.cidr_blocks not contains "0.0.0.0/0"
+		}
+	}
+}
+
+deny_public_ssh_security_group_rules = rule {
+	all ssh_security_group_rules as _, ssgr {
+		ssgr.change.after.cidr_blocks not contains "0.0.0.0/0"
+	}
+}
+
+deny_all_open_protocol_security_groups = rule {
+	all protocol_security_groups as _, psg {
+		all psg.change.after.ingress as _, ingress {
+			ingress.cidr_blocks not contains "0.0.0.0/0"
+		}
+	}
+}
+
+deny_all_open_protocol_security_group_rules = rule {
+	all protocol_security_group_rules as _, psgr {
+		psgr.change.after.cidr_blocks not contains "0.0.0.0/0"
+	}
+}
+
+main = rule {
+	deny_public_ssh_security_groups and
+	deny_public_ssh_security_group_rules and
+	deny_all_open_protocol_security_groups and
+	deny_all_open_protocol_security_group_rules
+}
+
+```
